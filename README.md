@@ -1,19 +1,30 @@
-<!-- Coding GIF -->
-<div align="center">
-  <img style="border-radius: 100px;" src="https://cdn.jsdelivr.net/gh/sun0225SUN/photos/images/202108300019556.gif" />
-</div>
-<br>
+<h2 align="left">Hi 👋! My name is Nhat Anh</h2>
 
-<!-- GitHub Trophies -->
-<div align="center">
-  <img src="https://github-profile-trophy.vercel.app/?username=dnAnh1523&theme=gruvbox&row=1&column=6&no-frame=true&no-bg=true" />
-</div>
-<br>
+###
 
-<!-- GitHub Stats with Custom Gradient Color -->
 <div align="center">
-  <img height="137px" src="https://github-readme-stats.vercel.app/api?username=dnAnh1523&hide_title=true&hide_border=true&show_icons=true&line_height=21&text_color=000&icon_color=000&bg_color=8cf0ff,61f5f8,32f8e7,0afbce,30fbac,46f895,5bf47b,6fef60,73e84f,77e03d,7bd927,7fd100&theme=graywhite" />
+  <img src="https://github-readme-stats.vercel.app/api?username=dnAnh1523&hide_title=false&hide_rank=false&show_icons=true&include_all_commits=true&count_private=true&disable_animations=false&theme=dracula&locale=en&hide_border=false" height="150" alt="stats graph"  />
+  <img src="https://github-readme-stats.vercel.app/api/top-langs?username=dnAnh1523&locale=en&hide_title=false&layout=compact&card_width=320&langs_count=5&theme=dracula&hide_border=false" height="150" alt="languages graph"  />
 </div>
-<br>
 
-[![GitHub Streak](https://github-readme-streak-stats.herokuapp.com?user=dnAnh1523&theme=dark&hide_border=true&date_format=j%2Fn%5B%2FY%5D)](https://git.io/streak-stats)
+###
+
+<div align="left">
+  <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/python/python-original.svg" height="30" alt="python logo"  />
+  <img width="12" />
+  <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/docker/docker-original.svg" height="30" alt="docker logo"  />
+  <img width="12" />
+  <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/git/git-original.svg" height="30" alt="git logo"  />
+  <img width="12" />
+  <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/github/github-original.svg" height="30" alt="github logo"  />
+  <img width="12" />
+  <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/azure/azure-original.svg" height="30" alt="azure logo"  />
+</div>
+
+###
+
+<br clear="both">
+
+<img src="https://raw.githubusercontent.com/dnAnh1523/dnAnh1523/output/snake.svg" alt="Snake animation" />
+
+###
