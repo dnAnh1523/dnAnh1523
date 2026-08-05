@@ -1,312 +1,384 @@
-#!/usr/bin/env python3
-"""
-Cap nhat cac chi so GitHub (repos, stars, followers, commits, lines of code)
-vao 2 file light_mode.svg / dark_mode.svg.
-
-Yeu cau:
-  - Bien moi truong USER_NAME: username GitHub cua ban
-  - Bien moi truong ACCESS_TOKEN: Personal Access Token (scope: repo, read:user)
-
-Cach chay thu local:
-  USER_NAME=<username> ACCESS_TOKEN=<token> python3 today.py
-"""
-
-import os
-import re
-import sys
-import json
-import time
+import datetime
+from dateutil import relativedelta
 import requests
-from datetime import date
+import os
+from lxml import etree
+import time
+import hashlib
 
-USER_NAME = os.environ.get("USER_NAME")
-ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN")
+# Fine-grained personal access token voi quyen All Repositories:
+# Account permissions: read:Followers, read:Starring, read:Watching
+# Repository permissions: read:Commit statuses, read:Contents, read:Issues, read:Metadata, read:Pull Requests
+HEADERS = {'authorization': 'token ' + os.environ['ACCESS_TOKEN']}
+USER_NAME = os.environ['USER_NAME']
+QUERY_COUNT = {'user_getter': 0, 'follower_getter': 0, 'graph_repos_stars': 0, 'recursive_loc': 0, 'graph_commits': 0, 'loc_query': 0}
 
-# Ngay sinh, dung de tu tinh "Uptime" (tuoi) moi lan workflow chay.
-# Sua lai ngay/thang/nam cho dung neu ban thay doi.
-BIRTH_DATE = date(2003, 2, 15)
-
-
-def get_age_string():
-    """Tra ve chuoi kieu '23 years, 5 months, 21 days' tinh tu BIRTH_DATE den hom nay."""
-    today = date.today()
-    years = today.year - BIRTH_DATE.year
-    months = today.month - BIRTH_DATE.month
-    days = today.day - BIRTH_DATE.day
-    if days < 0:
-        months -= 1
-        prev_month = today.month - 1 or 12
-        prev_year = today.year if today.month > 1 else today.year - 1
-        import calendar
-        days += calendar.monthrange(prev_year, prev_month)[1]
-    if months < 0:
-        years -= 1
-        months += 12
-    return f"{years} years, {months} months, {days} days"
-
-if not USER_NAME or not ACCESS_TOKEN:
-    sys.exit("Thieu bien moi truong USER_NAME hoac ACCESS_TOKEN")
-
-GRAPHQL_URL = "https://api.github.com/graphql"
-HEADERS = {"Authorization": f"bearer {ACCESS_TOKEN}"}
-
-CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache")
-os.makedirs(CACHE_DIR, exist_ok=True)
-CACHE_FILE = os.path.join(CACHE_DIR, f"{USER_NAME}_loc_cache.json")
+# Ngay sinh cua ban - dung de tinh "Uptime" (tuoi) tu dong moi lan chay
+BIRTHDAY = datetime.datetime(2003, 2, 15)
 
 
-def gql(query, variables=None):
-    """Goi GitHub GraphQL API, tu dong retry khi bi rate limit."""
-    for attempt in range(5):
-        r = requests.post(
-            GRAPHQL_URL,
-            headers=HEADERS,
-            json={"query": query, "variables": variables or {}},
-        )
-        if r.status_code == 200:
-            data = r.json()
-            if "errors" in data:
-                raise RuntimeError(data["errors"])
-            return data["data"]
-        if r.status_code in (502, 503) or "rate limit" in r.text.lower():
-            time.sleep(5 * (attempt + 1))
-            continue
-        raise RuntimeError(f"GraphQL that bai ({r.status_code}): {r.text}")
-    raise RuntimeError("GraphQL that bai sau nhieu lan thu lai")
-
-
-def get_user_overview():
-    """Lay: ngay tao tai khoan, so followers, so repo (khong tinh fork)."""
-    query = """
-    query($login: String!) {
-      user(login: $login) {
-        createdAt
-        followers { totalCount }
-        repositories(first: 1, ownerAffiliations: [OWNER], isFork: false) {
-          totalCount
-        }
-      }
-    }
+def daily_readme(birthday):
     """
-    data = gql(query, {"login": USER_NAME})["user"]
-    return data
+    Tra ve khoang thoi gian tu ngay sinh den hien tai
+    vd 'XX years, XX months, XX days'
+    """
+    diff = relativedelta.relativedelta(datetime.datetime.today(), birthday)
+    return '{} {}, {} {}, {} {}{}'.format(
+        diff.years, 'year' + format_plural(diff.years),
+        diff.months, 'month' + format_plural(diff.months),
+        diff.days, 'day' + format_plural(diff.days),
+        ' 🎂' if (diff.months == 0 and diff.days == 0) else '')
 
 
-def get_star_count():
-    """Cong don so sao (stargazers) tren tat ca repo ban own (khong tinh fork)."""
-    total_stars = 0
-    cursor = None
-    while True:
-        query = """
-        query($login: String!, $cursor: String) {
-          user(login: $login) {
-            repositories(first: 100, after: $cursor, ownerAffiliations: [OWNER], isFork: false) {
-              pageInfo { hasNextPage endCursor }
-              nodes { stargazerCount }
+def format_plural(unit):
+    """
+    Tra ve so nhieu dung ngu phap
+    """
+    return 's' if unit != 1 else ''
+
+
+def simple_request(func_name, query, variables):
+    """
+    Tra ve request, hoac raise Exception neu that bai
+    """
+    request = requests.post('https://api.github.com/graphql', json={'query': query, 'variables': variables}, headers=HEADERS)
+    if request.status_code == 200:
+        return request
+    raise Exception(func_name, ' has failed with a', request.status_code, request.text, QUERY_COUNT)
+
+
+def graph_repos_stars(count_type, owner_affiliation, cursor=None):
+    """
+    Dung GraphQL v4 API de lay tong so repo hoac tong so sao
+    """
+    query_count('graph_repos_stars')
+    query = '''
+    query ($owner_affiliation: [RepositoryAffiliation], $login: String!, $cursor: String) {
+        user(login: $login) {
+            repositories(first: 100, after: $cursor, ownerAffiliations: $owner_affiliation) {
+                totalCount
+                edges {
+                    node {
+                        ... on Repository {
+                            nameWithOwner
+                            stargazers { totalCount }
+                        }
+                    }
+                }
+                pageInfo { endCursor hasNextPage }
             }
-          }
         }
-        """
-        data = gql(query, {"login": USER_NAME, "cursor": cursor})["user"]["repositories"]
-        total_stars += sum(n["stargazerCount"] for n in data["nodes"])
-        if not data["pageInfo"]["hasNextPage"]:
-            break
-        cursor = data["pageInfo"]["endCursor"]
+    }'''
+    variables = {'owner_affiliation': owner_affiliation, 'login': USER_NAME, 'cursor': cursor}
+    request = simple_request(graph_repos_stars.__name__, query, variables)
+    if count_type == 'repos':
+        return request.json()['data']['user']['repositories']['totalCount']
+    elif count_type == 'stars':
+        return stars_counter(request.json()['data']['user']['repositories']['edges'])
+
+
+def recursive_loc(owner, repo_name, data, cache_comment, addition_total=0, deletion_total=0, my_commits=0, cursor=None):
+    """
+    Dung GraphQL v4 API + cursor pagination de lay 100 commit 1 lan tu 1 repo
+    """
+    query_count('recursive_loc')
+    query = '''
+    query ($repo_name: String!, $owner: String!, $cursor: String) {
+        repository(name: $repo_name, owner: $owner) {
+            defaultBranchRef {
+                target {
+                    ... on Commit {
+                        history(first: 100, after: $cursor) {
+                            totalCount
+                            edges {
+                                node {
+                                    ... on Commit { committedDate }
+                                    author { user { id } }
+                                    deletions
+                                    additions
+                                }
+                            }
+                            pageInfo { endCursor hasNextPage }
+                        }
+                    }
+                }
+            }
+        }
+    }'''
+    variables = {'repo_name': repo_name, 'owner': owner, 'cursor': cursor}
+    request = requests.post('https://api.github.com/graphql', json={'query': query, 'variables': variables}, headers=HEADERS)
+    if request.status_code == 200:
+        if request.json()['data']['repository']['defaultBranchRef'] is not None:
+            return loc_counter_one_repo(owner, repo_name, data, cache_comment, request.json()['data']['repository']['defaultBranchRef']['target']['history'], addition_total, deletion_total, my_commits)
+        else:
+            return 0
+    force_close_file(data, cache_comment)
+    if request.status_code == 403:
+        raise Exception('Too many requests in a short amount of time! You\'ve hit the non-documented anti-abuse limit!')
+    raise Exception('recursive_loc() has failed with a', request.status_code, request.text, QUERY_COUNT)
+
+
+def loc_counter_one_repo(owner, repo_name, data, cache_comment, history, addition_total, deletion_total, my_commits):
+    """
+    Chi cong don LOC cua cac commit do chinh USER_NAME tao ra
+    """
+    for node in history['edges']:
+        if node['node']['author']['user'] == OWNER_ID:
+            my_commits += 1
+            addition_total += node['node']['additions']
+            deletion_total += node['node']['deletions']
+
+    if history['edges'] == [] or not history['pageInfo']['hasNextPage']:
+        return addition_total, deletion_total, my_commits
+    else:
+        return recursive_loc(owner, repo_name, data, cache_comment, addition_total, deletion_total, my_commits, history['pageInfo']['endCursor'])
+
+
+def loc_query(owner_affiliation, comment_size=0, force_cache=False, cursor=None, edges=None):
+    """
+    Duyet tat ca repo (theo owner_affiliation), 60 repo/lan, tra ve tong so dong code
+    """
+    if edges is None:
+        edges = []
+    query_count('loc_query')
+    query = '''
+    query ($owner_affiliation: [RepositoryAffiliation], $login: String!, $cursor: String) {
+        user(login: $login) {
+            repositories(first: 60, after: $cursor, ownerAffiliations: $owner_affiliation) {
+                edges {
+                    node {
+                        ... on Repository {
+                            nameWithOwner
+                            defaultBranchRef { target { ... on Commit { history { totalCount } } } }
+                        }
+                    }
+                }
+                pageInfo { endCursor hasNextPage }
+            }
+        }
+    }'''
+    variables = {'owner_affiliation': owner_affiliation, 'login': USER_NAME, 'cursor': cursor}
+    request = simple_request(loc_query.__name__, query, variables)
+    if request.json()['data']['user']['repositories']['pageInfo']['hasNextPage']:
+        edges += request.json()['data']['user']['repositories']['edges']
+        return loc_query(owner_affiliation, comment_size, force_cache, request.json()['data']['user']['repositories']['pageInfo']['endCursor'], edges)
+    else:
+        return cache_builder(edges + request.json()['data']['user']['repositories']['edges'], comment_size, force_cache)
+
+
+def cache_builder(edges, comment_size, force_cache, loc_add=0, loc_del=0):
+    """
+    Kiem tra tung repo xem co thay doi tu lan cache truoc khong, neu co thi tinh lai LOC
+    """
+    cached = True
+    filename = 'cache/' + hashlib.sha256(USER_NAME.encode('utf-8')).hexdigest() + '.txt'
+    try:
+        with open(filename, 'r') as f:
+            data = f.readlines()
+    except FileNotFoundError:
+        data = []
+        if comment_size > 0:
+            for _ in range(comment_size):
+                data.append('This line is a comment block. Write whatever you want here.\n')
+        with open(filename, 'w') as f:
+            f.writelines(data)
+
+    if len(data) - comment_size != len(edges) or force_cache:
+        cached = False
+        flush_cache(edges, filename, comment_size)
+        with open(filename, 'r') as f:
+            data = f.readlines()
+
+    cache_comment = data[:comment_size]
+    data = data[comment_size:]
+    for index in range(len(edges)):
+        repo_hash, commit_count, *__ = data[index].split()
+        if repo_hash == hashlib.sha256(edges[index]['node']['nameWithOwner'].encode('utf-8')).hexdigest():
+            try:
+                if int(commit_count) != edges[index]['node']['defaultBranchRef']['target']['history']['totalCount']:
+                    owner, repo_name = edges[index]['node']['nameWithOwner'].split('/')
+                    loc = recursive_loc(owner, repo_name, data, cache_comment)
+                    data[index] = repo_hash + ' ' + str(edges[index]['node']['defaultBranchRef']['target']['history']['totalCount']) + ' ' + str(loc[2]) + ' ' + str(loc[0]) + ' ' + str(loc[1]) + '\n'
+            except TypeError:
+                data[index] = repo_hash + ' 0 0 0 0\n'
+    with open(filename, 'w') as f:
+        f.writelines(cache_comment)
+        f.writelines(data)
+    for line in data:
+        loc = line.split()
+        loc_add += int(loc[3])
+        loc_del += int(loc[4])
+    return [loc_add, loc_del, loc_add - loc_del, cached]
+
+
+def flush_cache(edges, filename, comment_size):
+    """
+    Xoa trang cache file - goi khi so luong repo thay doi hoac lan dau tao file
+    """
+    with open(filename, 'r') as f:
+        data = []
+        if comment_size > 0:
+            data = f.readlines()[:comment_size]
+    with open(filename, 'w') as f:
+        f.writelines(data)
+        for node in edges:
+            f.write(hashlib.sha256(node['node']['nameWithOwner'].encode('utf-8')).hexdigest() + ' 0 0 0 0\n')
+
+
+def force_close_file(data, cache_comment):
+    """
+    Luu tam du lieu neu chuong trinh crash giua chung, tranh mat cache
+    """
+    filename = 'cache/' + hashlib.sha256(USER_NAME.encode('utf-8')).hexdigest() + '.txt'
+    with open(filename, 'w') as f:
+        f.writelines(cache_comment)
+        f.writelines(data)
+    print('There was an error while writing to the cache file. The file,', filename, 'has had the partial data saved and closed.')
+
+
+def stars_counter(data):
+    """
+    Cong don so sao cua cac repo minh la owner
+    """
+    total_stars = 0
+    for node in data:
+        total_stars += node['node']['stargazers']['totalCount']
     return total_stars
 
 
-def get_commit_count(created_at):
-    """Cong don totalCommitContributions tu nam tao tai khoan den nay."""
-    start_year = int(created_at[:4])
-    from datetime import datetime, timezone
-    end_year = datetime.now(timezone.utc).year
-    total = 0
-    for year in range(start_year, end_year + 1):
-        query = """
-        query($login: String!, $from: DateTime!, $to: DateTime!) {
-          user(login: $login) {
-            contributionsCollection(from: $from, to: $to) {
-              totalCommitContributions
-              restrictedContributionsCount
-            }
-          }
-        }
-        """
-        variables = {
-            "login": USER_NAME,
-            "from": f"{year}-01-01T00:00:00Z",
-            "to": f"{year}-12-31T23:59:59Z",
-        }
-        c = gql(query, variables)["user"]["contributionsCollection"]
-        total += c["totalCommitContributions"] + c["restrictedContributionsCount"]
-    return total
-
-
-def get_repo_list():
-    """Lay danh sach (owner, name, defaultBranch) cua repo ban own, khong tinh fork."""
-    repos = []
-    cursor = None
-    while True:
-        query = """
-        query($login: String!, $cursor: String) {
-          user(login: $login) {
-            repositories(first: 100, after: $cursor, ownerAffiliations: [OWNER], isFork: false) {
-              pageInfo { hasNextPage endCursor }
-              nodes {
-                name
-                defaultBranchRef { name }
-              }
-            }
-          }
-        }
-        """
-        data = gql(query, {"login": USER_NAME, "cursor": cursor})["user"]["repositories"]
-        for n in data["nodes"]:
-            if n["defaultBranchRef"]:
-                repos.append((USER_NAME, n["name"], n["defaultBranchRef"]["name"]))
-        if not data["pageInfo"]["hasNextPage"]:
-            break
-        cursor = data["pageInfo"]["endCursor"]
-    return repos
-
-
-def get_repo_loc(owner, name, branch, cache):
+def svg_overwrite(filename, age_data, commit_data, star_data, repo_data, contrib_data, follower_data, loc_data):
     """
-    Cong don additions/deletions cua cac commit do chinh USER_NAME tao ra,
-    tren nhanh mac dinh cua 1 repo. Ket qua duoc cache theo commit cuoi cung
-    da xu ly de nhung lan chay sau khong phai quet lai tu dau.
+    Parse file SVG va cap nhat cac phan tu: tuoi, commit, sao, repo, dong gop, follower, LOC
     """
-    key = f"{owner}/{name}"
-    cached = cache.get(key, {"additions": 0, "deletions": 0, "last_oid": None})
-    additions, deletions = cached["additions"], cached["deletions"]
-    stop_at = cached["last_oid"]
-
-    cursor = None
-    newest_oid = None
-    done = False
-    while not done:
-        query = """
-        query($owner: String!, $name: String!, $branch: String!, $cursor: String) {
-          repository(owner: $owner, name: $name) {
-            ref(qualifiedName: $branch) {
-              target {
-                ... on Commit {
-                  history(first: 100, after: $cursor) {
-                    pageInfo { hasNextPage endCursor }
-                    nodes {
-                      oid
-                      additions
-                      deletions
-                      author { user { login } }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-        """
-        variables = {"owner": owner, "name": name, "branch": branch, "cursor": cursor}
-        data = gql(query, variables)["repository"]["ref"]
-        if not data:
-            break
-        history = data["target"]["history"]
-        for commit in history["nodes"]:
-            if newest_oid is None:
-                newest_oid = commit["oid"]
-            if commit["oid"] == stop_at:
-                done = True
-                break
-            author = commit["author"]["user"]
-            if author and author["login"] == USER_NAME:
-                additions += commit["additions"]
-                deletions += commit["deletions"]
-        if done or not history["pageInfo"]["hasNextPage"]:
-            break
-        cursor = history["pageInfo"]["endCursor"]
-
-    cache[key] = {"additions": additions, "deletions": deletions, "last_oid": newest_oid or stop_at}
-    return additions, deletions
+    tree = etree.parse(filename)
+    root = tree.getroot()
+    justify_format(root, 'age_data', age_data, 30)
+    justify_format(root, 'commit_data', commit_data, 22)
+    justify_format(root, 'star_data', star_data, 14)
+    justify_format(root, 'repo_data', repo_data, 6)
+    justify_format(root, 'contrib_data', contrib_data)
+    justify_format(root, 'follower_data', follower_data, 10)
+    justify_format(root, 'loc_data', loc_data[2], 9)
+    justify_format(root, 'loc_add', loc_data[0])
+    justify_format(root, 'loc_del', loc_data[1], 7)
+    tree.write(filename, encoding='utf-8', xml_declaration=True)
 
 
-def get_total_loc(repos):
-    if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE) as f:
-            cache = json.load(f)
+def justify_format(root, element_id, new_text, length=0):
+    """
+    Cap nhat text cua phan tu, va tu dieu chinh so dau cham o phan tu
+    lien truoc de canh (justify) noi dung moi cho vua khung SVG
+    """
+    if isinstance(new_text, int):
+        new_text = '{:,}'.format(new_text)
+    new_text = str(new_text)
+    find_and_replace(root, element_id, new_text)
+    just_len = max(0, length - len(new_text))
+    if just_len <= 2:
+        dot_map = {0: '', 1: ' ', 2: '. '}
+        dot_string = dot_map[just_len]
     else:
-        cache = {}
-
-    total_add, total_del = 0, 0
-    for owner, name, branch in repos:
-        try:
-            a, d = get_repo_loc(owner, name, branch, cache)
-        except Exception as e:
-            print(f"  [canh bao] bo qua {owner}/{name}: {e}", file=sys.stderr)
-            continue
-        total_add += a
-        total_del += d
-
-    with open(CACHE_FILE, "w") as f:
-        json.dump(cache, f)
-
-    return total_add, total_del
+        dot_string = ' ' + ('.' * just_len) + ' '
+    find_and_replace(root, f"{element_id}_dots", dot_string)
 
 
-def set_tspan_value(svg_text, element_id, value):
-    """Thay noi dung text cua tspan co id=... , dung cho ca file svg."""
-    pattern = rf'(<tspan[^>]*id="{element_id}"[^>]*>)([^<]*)(</tspan>)'
-    return re.sub(pattern, lambda m: f"{m.group(1)}{value}{m.group(3)}", svg_text)
+def find_and_replace(root, element_id, new_text):
+    """
+    Tim phan tu co id trong file SVG va thay text
+    """
+    element = root.find(f".//*[@id='{element_id}']")
+    if element is not None:
+        element.text = new_text
 
 
-def update_svg_file(path, values):
-    with open(path, "r", encoding="utf-8") as f:
-        svg = f.read()
-    for element_id, value in values.items():
-        svg = set_tspan_value(svg, element_id, value)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(svg)
-    print(f"  da cap nhat {path}")
+def commit_counter(comment_size):
+    """
+    Dem tong so commit, dung file cache do cache_builder tao ra
+    """
+    total_commits = 0
+    filename = 'cache/' + hashlib.sha256(USER_NAME.encode('utf-8')).hexdigest() + '.txt'
+    with open(filename, 'r') as f:
+        data = f.readlines()
+    data = data[comment_size:]
+    for line in data:
+        total_commits += int(line.split()[2])
+    return total_commits
 
 
-def main():
-    print(f"Dang lay du lieu GitHub cho {USER_NAME}...")
-
-    overview = get_user_overview()
-    followers = overview["followers"]["totalCount"]
-    repo_count = overview["repositories"]["totalCount"]
-    created_at = overview["createdAt"]
-
-    print("  dang tinh sao (stars)...")
-    stars = get_star_count()
-
-    print("  dang tinh commit...")
-    commits = get_commit_count(created_at)
-
-    print("  dang liet ke repo...")
-    repos = get_repo_list()
-
-    print(f"  dang tinh lines of code cho {len(repos)} repo (co the mat vai phut lan dau)...")
-    additions, deletions = get_total_loc(repos)
-    net_loc = additions - deletions
-
-    values = {
-        "age_data": get_age_string(),
-        "repo_data": f"{repo_count}",
-        "star_data": f"{stars}",
-        "follower_data": f"{followers}",
-        "commit_data": f"{commits:,}",
-        "loc_data": f"{net_loc:,}",
-        "loc_add": f"{additions:,}",
-        "loc_del": f"{deletions:,}",
-    }
-
-    print("Ket qua:", values)
-
-    for filename in ("light_mode.svg", "dark_mode.svg"):
-        path = os.path.join(os.path.dirname(__file__), filename)
-        if os.path.exists(path):
-            update_svg_file(path, values)
+def user_getter(username):
+    """
+    Tra ve ID va ngay tao tai khoan cua user
+    """
+    query_count('user_getter')
+    query = '''
+    query($login: String!){
+        user(login: $login) { id createdAt }
+    }'''
+    variables = {'login': username}
+    request = simple_request(user_getter.__name__, query, variables)
+    return {'id': request.json()['data']['user']['id']}, request.json()['data']['user']['createdAt']
 
 
-if __name__ == "__main__":
-    main()
+def follower_getter(username):
+    """
+    Tra ve so luong follower cua user
+    """
+    query_count('follower_getter')
+    query = '''
+    query($login: String!){
+        user(login: $login) { followers { totalCount } }
+    }'''
+    request = simple_request(follower_getter.__name__, query, {'login': username})
+    return int(request.json()['data']['user']['followers']['totalCount'])
+
+
+def query_count(funct_id):
+    global QUERY_COUNT
+    QUERY_COUNT[funct_id] += 1
+
+
+def perf_counter(funct, *args):
+    start = time.perf_counter()
+    funct_return = funct(*args)
+    return funct_return, time.perf_counter() - start
+
+
+def formatter(query_type, difference, funct_return=False, whitespace=0):
+    print('{:<23}'.format('   ' + query_type + ':'), sep='', end='')
+    print('{:>12}'.format('%.4f' % difference + ' s ')) if difference > 1 else print('{:>12}'.format('%.4f' % (difference * 1000) + ' ms'))
+    if whitespace:
+        return f"{'{:,}'.format(funct_return): <{whitespace}}"
+    return funct_return
+
+
+if __name__ == '__main__':
+    print('Calculation times:')
+    user_data, user_time = perf_counter(user_getter, USER_NAME)
+    OWNER_ID, acc_date = user_data
+    formatter('account data', user_time)
+
+    age_data, age_time = perf_counter(daily_readme, BIRTHDAY)
+    formatter('age calculation', age_time)
+
+    total_loc, loc_time = perf_counter(loc_query, ['OWNER', 'COLLABORATOR', 'ORGANIZATION_MEMBER'], 7)
+    formatter('LOC (cached)', loc_time) if total_loc[-1] else formatter('LOC (no cache)', loc_time)
+
+    commit_data, commit_time = perf_counter(commit_counter, 7)
+    star_data, star_time = perf_counter(graph_repos_stars, 'stars', ['OWNER'])
+    repo_data, repo_time = perf_counter(graph_repos_stars, 'repos', ['OWNER'])
+    contrib_data, contrib_time = perf_counter(graph_repos_stars, 'repos', ['OWNER', 'COLLABORATOR', 'ORGANIZATION_MEMBER'])
+    follower_data, follower_time = perf_counter(follower_getter, USER_NAME)
+
+    for index in range(len(total_loc) - 1):
+        total_loc[index] = '{:,}'.format(total_loc[index])
+
+    svg_overwrite('dark_mode.svg', age_data, commit_data, star_data, repo_data, contrib_data, follower_data, total_loc[:-1])
+    svg_overwrite('light_mode.svg', age_data, commit_data, star_data, repo_data, contrib_data, follower_data, total_loc[:-1])
+
+    print('\033[F\033[F\033[F\033[F\033[F\033[F\033[F\033[F',
+          '{:<21}'.format('Total function time:'), '{:>11}'.format('%.4f' % (user_time + age_time + loc_time + commit_time + star_time + repo_time + contrib_time)),
+          ' s \033[E\033[E\033[E\033[E\033[E\033[E\033[E\033[E', sep='')
+
+    print('Total GitHub GraphQL API calls:', '{:>3}'.format(sum(QUERY_COUNT.values())))
+    for funct_name, count in QUERY_COUNT.items():
+        print('{:<28}'.format('   ' + funct_name + ':'), '{:>6}'.format(count))
