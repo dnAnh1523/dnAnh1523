@@ -17,9 +17,32 @@ import sys
 import json
 import time
 import requests
+from datetime import date
 
 USER_NAME = os.environ.get("USER_NAME")
 ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN")
+
+# Ngay sinh, dung de tu tinh "Uptime" (tuoi) moi lan workflow chay.
+# Sua lai ngay/thang/nam cho dung neu ban thay doi.
+BIRTH_DATE = date(2003, 2, 15)
+
+
+def get_age_string():
+    """Tra ve chuoi kieu '23 years, 5 months, 21 days' tinh tu BIRTH_DATE den hom nay."""
+    today = date.today()
+    years = today.year - BIRTH_DATE.year
+    months = today.month - BIRTH_DATE.month
+    days = today.day - BIRTH_DATE.day
+    if days < 0:
+        months -= 1
+        prev_month = today.month - 1 or 12
+        prev_year = today.year if today.month > 1 else today.year - 1
+        import calendar
+        days += calendar.monthrange(prev_year, prev_month)[1]
+    if months < 0:
+        years -= 1
+        months += 12
+    return f"{years} years, {months} months, {days} days"
 
 if not USER_NAME or not ACCESS_TOKEN:
     sys.exit("Thieu bien moi truong USER_NAME hoac ACCESS_TOKEN")
@@ -267,6 +290,7 @@ def main():
     net_loc = additions - deletions
 
     values = {
+        "age_data": get_age_string(),
         "repo_data": f"{repo_count}",
         "star_data": f"{stars}",
         "follower_data": f"{followers}",
