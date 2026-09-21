@@ -238,10 +238,12 @@ def force_close_file(data, cache_comment):
 
 def stars_counter(data):
     """
-    Cong don so sao cua cac repo minh la owner
+    Cong don so sao cua cac repo minh la owner (bo qua repo tra ve null)
     """
     total_stars = 0
     for node in data:
+        if node['node'] is None:
+            continue
         total_stars += node['node']['stargazers']['totalCount']
     return total_stars
 
