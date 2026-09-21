@@ -247,15 +247,13 @@ def stars_counter(data):
 
 
 def svg_overwrite(filename, age_data, commit_data, star_data, repo_data, contrib_data, follower_data, loc_data):
-    """
-    Parse file SVG va cap nhat cac phan tu: tuoi, commit, sao, repo, dong gop, follower, LOC
-    """
     tree = etree.parse(filename)
     root = tree.getroot()
-    justify_format(root, 'age_data', age_data, 30)
-    justify_format(root, 'commit_data', commit_data, 22)
+    contrib_len = len(f'{contrib_data:,}')
+    justify_format(root, 'age_data', age_data, 49)
+    justify_format(root, 'commit_data', commit_data, 23)
     justify_format(root, 'star_data', star_data, 14)
-    justify_format(root, 'repo_data', repo_data, 6)
+    justify_format(root, 'repo_data', repo_data, 9 - contrib_len)
     justify_format(root, 'contrib_data', contrib_data)
     justify_format(root, 'follower_data', follower_data, 10)
     justify_format(root, 'loc_data', loc_data[2], 9)
@@ -352,6 +350,7 @@ def formatter(query_type, difference, funct_return=False, whitespace=0):
 
 
 if __name__ == '__main__':
+    os.makedirs('cache', exist_ok=True)
     print('Calculation times:')
     user_data, user_time = perf_counter(user_getter, USER_NAME)
     OWNER_ID, acc_date = user_data
